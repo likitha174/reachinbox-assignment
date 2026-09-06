@@ -8,8 +8,9 @@ import {
   checkHourlyLimit,
   getRemainingTime,
 } from "./hourlyRateLimiter.js";
+import { sendSlackNotification } from "./slackService.js";
 
-const connection = new IORedis({
+const connection = new IORedis.default({
   host: "localhost",
   port: 6379,
   maxRetriesPerRequest: null,
@@ -20,7 +21,6 @@ const worker = new Worker(
   async (job) => {
     console.log("Processing email job:", job.id);
 
-    // Check hourly limit
     const allowed = await checkHourlyLimit();
 
     if (!allowed) {
@@ -32,8 +32,11 @@ const worker = new Worker(
         )} seconds.`
       );
 
-      // Move the SAME job back to delayed state.
-      // This keeps the same job ID and PostgreSQL relationship.
+      // Send a real Slack notification
+      await sendSlackNotification(
+        `⚠️ Email hourly limit reached. Job ${job.id} has been rescheduled and will continue after the rate-limit window resets.`
+      );
+
       await job.moveToDelayed(
         Date.now() + Math.max(delay, 1000),
         job.token
@@ -43,10 +46,15 @@ const worker = new Worker(
     }
 
     try {
-      // Mark email as PROCESSING
+      const emailId = job.data.emailId;
+
+      if (!emailId) {
+        throw new Error("Email ID is missing from job data");
+      }
+
       await prisma.email.update({
         where: {
-          jobId: job.id,
+          id: emailId,
         },
         data: {
           status: "PROCESSING",
@@ -54,18 +62,49 @@ const worker = new Worker(
         },
       });
 
-      const { recipient, subject, body } = job.data;
+      const {
+        recipient,
+        subject,
+        body,
+        senderId,
+      } = job.data;
 
-      // Respect minimum delay
       await waitForMinimumDelay();
 
-      // Send the email
-      await sendEmail(recipient, subject, body);
+      if (senderId) {
+        const sender = await prisma.sender.findUnique({
+          where: {
+            id: senderId,
+          },
+        });
 
-      // Mark email as SENT
+        if (!sender) {
+          throw new Error(`Sender ${senderId} not found`);
+        }
+
+        console.log(
+          `Sending email using sender: ${sender.email}`
+        );
+      }
+
+      await sendEmail(
+        recipient,
+        subject,
+        body,
+        senderId
+          ? (
+              await prisma.sender.findUnique({
+                where: {
+                  id: senderId,
+                },
+              })
+            )?.email
+          : undefined
+      );
+
       await prisma.email.update({
         where: {
-          jobId: job.id,
+          id: emailId,
         },
         data: {
           status: "SENT",
@@ -73,26 +112,40 @@ const worker = new Worker(
         },
       });
 
-      console.log("Email successfully sent for job:", job.id);
+      console.log(
+        "Email successfully sent for job:",
+        job.id
+      );
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
+        error instanceof Error
+          ? error.message
+          : "Unknown error";
 
-      // Mark email as FAILED
-      await prisma.email.update({
-        where: {
-          jobId: job.id,
-        },
-        data: {
-          status: "FAILED",
-          errorMessage,
-        },
-      });
+      const emailId = job.data.emailId;
 
-      console.error("Email failed for job:", job.id);
-      console.error("Error:", errorMessage);
+      if (emailId) {
+        await prisma.email.update({
+          where: {
+            id: emailId,
+          },
+          data: {
+            status: "FAILED",
+            errorMessage,
+          },
+        });
+      }
 
-      // Tell BullMQ that the job failed
+      console.error(
+        "Email failed for job:",
+        job.id
+      );
+
+      console.error(
+        "Error:",
+        errorMessage
+      );
+
       throw error;
     }
   },
@@ -107,10 +160,19 @@ worker.on("completed", (job) => {
 });
 
 worker.on("failed", (job, error) => {
-  console.error(`Job ${job?.id} failed:`, error.message);
+  console.error(
+    `Job ${job?.id} failed:`,
+    error.message
+  );
 });
 
 console.log("Email worker is running...");
-console.log(`Worker concurrency: ${config.workerConcurrency}`);
-console.log(`Minimum delay: ${config.minDelayMs} ms`);
-console.log(`Hourly limit: ${config.hourlyLimit}`);
+console.log(
+  `Worker concurrency: ${config.workerConcurrency}`
+);
+console.log(
+  `Minimum delay: ${config.minDelayMs} ms`
+);
+console.log(
+  `Hourly limit: ${config.hourlyLimit}`
+);

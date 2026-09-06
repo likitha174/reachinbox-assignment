@@ -1,7 +1,7 @@
-import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import { Queue } from "bullmq";
 
-const connection = new IORedis({
+const connection = new IORedis.default({
   host: "localhost",
   port: 6379,
   maxRetriesPerRequest: null,
@@ -12,12 +12,17 @@ const queue = new Queue("emailQueue", {
 });
 
 async function clearQueue() {
-  await queue.obliterate({ force: true });
+  await queue.obliterate({
+    force: true,
+  });
 
-  console.log("Queue cleared successfully");
+  console.log("Email queue cleared successfully.");
 
   await queue.close();
   await connection.quit();
 }
 
-clearQueue();
+clearQueue().catch((error) => {
+  console.error("Failed to clear queue:", error);
+  process.exit(1);
+});

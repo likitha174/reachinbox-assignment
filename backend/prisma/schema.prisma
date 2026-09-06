@@ -8,18 +8,19 @@ datasource db {
 }
 
 model Email {
-  id            String   @id @default(uuid())
+  id            String      @id @default(uuid())
   recipient     String
   subject       String
   body          String
   scheduledTime DateTime
   sentAt        DateTime?
   status        EmailStatus @default(SCHEDULED)
-  jobId         String?  @unique
-  senderEmail   String?
+  jobId         String?     @unique
+  senderId      String?
+  sender        Sender?     @relation(fields: [senderId], references: [id])
   errorMessage  String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   @@index([status])
   @@index([scheduledTime])
@@ -31,4 +32,32 @@ enum EmailStatus {
   PROCESSING
   SENT
   FAILED
+}
+
+model Sender {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  emails Email[]
+}
+
+model SlackConnection {
+  id            String   @id @default(uuid())
+  workspaceId   String?
+  workspaceName String?
+  accessToken   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+model User {
+  id        String   @id @default(uuid())
+  googleId  String   @unique
+  email     String   @unique
+  name      String
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

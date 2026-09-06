@@ -21,6 +21,21 @@ services:
     volumes:
       - redis_data:/data
 
+  elasticsearch:
+    platform: linux/amd64
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    container_name: reachinbox-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+
 volumes:
   postgres_data:
   redis_data:
+  elasticsearch_data:

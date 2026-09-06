@@ -1,6 +1,25 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 
+type Sender = {
+  id: string;
+  email: string;
+  name?: string | null;
+};
+
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl?: string | null;
+};
+
+type SlackStatus = {
+  connected: boolean;
+  workspaceName: string | null;
+  workspaceId: string | null;
+};
+
 type Email = {
   id: string;
   recipient: string;
@@ -9,12 +28,22 @@ type Email = {
   scheduledTime: string;
   sentAt?: string | null;
   status: "SCHEDULED" | "PROCESSING" | "SENT" | "FAILED";
+  sender?: Sender | null;
 };
 
 const API_URL = "http://localhost:5200";
 
 function App() {
   const [emails, setEmails] = useState<Email[]>([]);
+  const [senders, setSenders] = useState<Sender[]>([]);
+  const [user, setUser] = useState<User | null>(null);
+
+  const [slackStatus, setSlackStatus] = useState<SlackStatus>({
+    connected: false,
+    workspaceName: null,
+    workspaceId: null,
+  });
+
   const [activeTab, setActiveTab] = useState("all");
   const [showCompose, setShowCompose] = useState(false);
 
@@ -22,6 +51,7 @@ function App() {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [scheduledTime, setScheduledTime] = useState("");
+  const [selectedSender, setSelectedSender] = useState("");
 
   const [delaySeconds, setDelaySeconds] = useState("1");
   const [hourlyLimit, setHourlyLimit] = useState("100");
@@ -32,6 +62,168 @@ function App() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingEmails, setLoadingEmails] = useState(false);
+  const [loadingSenders, setLoadingSenders] = useState(false);
+  const [loadingUser, setLoadingUser] = useState(true);
+  const [loadingSlack, setLoadingSlack] = useState(false);
+
+  // -----------------------------
+  // Google authentication
+  // -----------------------------
+
+  const loadCurrentUser = async () => {
+    try {
+      setLoadingUser(true);
+
+      const response = await fetch(`${API_URL}/api/auth/me`, {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        setUser(null);
+        return;
+      }
+
+      const data = await response.json();
+      setUser(data.user || null);
+    } catch (error) {
+      console.error("Failed to load current user:", error);
+      setUser(null);
+    } finally {
+      setLoadingUser(false);
+    }
+  };
+
+  const loginWithGoogle = () => {
+    window.location.href = `${API_URL}/api/auth/google`;
+  };
+
+  const logout = async () => {
+    try {
+      await fetch(`${API_URL}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch (error) {
+      console.error("Logout failed:", error);
+    } finally {
+      setUser(null);
+    }
+  };
+
+  // -----------------------------
+  // Slack
+  // -----------------------------
+
+  const loadSlackStatus = async () => {
+    try {
+      setLoadingSlack(true);
+
+      const response = await fetch(`${API_URL}/api/slack/status`);
+
+      if (!response.ok) {
+        throw new Error("Failed to load Slack status");
+      }
+
+      const data = await response.json();
+
+      setSlackStatus({
+        connected: !!data.connected,
+        workspaceName: data.workspaceName || null,
+        workspaceId: data.workspaceId || null,
+      });
+    } catch (error) {
+      console.error("Slack status error:", error);
+    } finally {
+      setLoadingSlack(false);
+    }
+  };
+
+  const connectSlack = () => {
+    const popup = window.open(
+      `${API_URL}/api/slack/connect`,
+      "slack-oauth",
+      "width=600,height=700,left=200,top=100"
+    );
+
+    if (!popup) {
+      setMessage(
+        "Popup was blocked. Please allow popups and try again."
+      );
+      return;
+    }
+
+    const checkConnection = window.setInterval(async () => {
+      if (popup.closed) {
+        window.clearInterval(checkConnection);
+        await loadSlackStatus();
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          `${API_URL}/api/slack/status`
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+
+          if (data.connected) {
+            setSlackStatus({
+              connected: true,
+              workspaceName: data.workspaceName || null,
+              workspaceId: data.workspaceId || null,
+            });
+
+            window.clearInterval(checkConnection);
+          }
+        }
+      } catch (error) {
+        console.error("Checking Slack connection:", error);
+      }
+    }, 1500);
+  };
+
+  const disconnectSlack = async () => {
+    try {
+      setLoadingSlack(true);
+      setMessage("");
+
+      const response = await fetch(
+        `${API_URL}/api/slack/disconnect`,
+        {
+          method: "POST",
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.error || "Failed to disconnect Slack"
+        );
+      }
+
+      setSlackStatus({
+        connected: false,
+        workspaceName: null,
+        workspaceId: null,
+      });
+
+      setMessage("Slack disconnected successfully.");
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Failed to disconnect Slack"
+      );
+    } finally {
+      setLoadingSlack(false);
+    }
+  };
+
+  // -----------------------------
+  // Load emails
+  // -----------------------------
 
   const loadEmails = async () => {
     try {
@@ -53,13 +245,54 @@ function App() {
     }
   };
 
+  // -----------------------------
+  // Load senders
+  // -----------------------------
+
+  const loadSenders = async () => {
+    try {
+      setLoadingSenders(true);
+
+      const response = await fetch(`${API_URL}/api/senders`);
+
+      if (!response.ok) {
+        throw new Error("Failed to load senders");
+      }
+
+      const data = await response.json();
+
+      setSenders(data.senders || []);
+
+      if (data.senders?.length > 0 && !selectedSender) {
+        setSelectedSender(data.senders[0].id);
+      }
+    } catch (error) {
+      console.error(error);
+      setMessage("Unable to load senders. Please check the backend.");
+    } finally {
+      setLoadingSenders(false);
+    }
+  };
+
   useEffect(() => {
     loadEmails();
+    loadSenders();
+    loadCurrentUser();
+    loadSlackStatus();
   }, []);
+
+  // -----------------------------
+  // Schedule single email
+  // -----------------------------
 
   const scheduleEmail = async () => {
     if (!recipient || !subject || !body || !scheduledTime) {
       setMessage("Please fill all required fields.");
+      return;
+    }
+
+    if (!selectedSender) {
+      setMessage("Please select a sender.");
       return;
     }
 
@@ -77,6 +310,7 @@ function App() {
           subject,
           body,
           scheduledTime,
+          senderId: selectedSender,
         }),
       });
 
@@ -102,6 +336,10 @@ function App() {
       setLoading(false);
     }
   };
+
+  // -----------------------------
+  // Read CSV recipients
+  // -----------------------------
 
   const readCSVRecipients = (file: File): Promise<string[]> => {
     return new Promise((resolve, reject) => {
@@ -158,9 +396,14 @@ function App() {
       };
 
       reader.onerror = () => reject(new Error("Unable to read CSV"));
+
       reader.readAsText(file);
     });
   };
+
+  // -----------------------------
+  // CSV file selected
+  // -----------------------------
 
   const handleCSVChange = async (
     event: React.ChangeEvent<HTMLInputElement>
@@ -181,9 +424,7 @@ function App() {
       setCsvCount(recipients.length);
 
       if (recipients.length === 0) {
-        setMessage(
-          "No valid email addresses detected in the CSV."
-        );
+        setMessage("No valid email addresses detected in the CSV.");
       } else {
         setMessage(
           `${recipients.length} email address${
@@ -196,11 +437,20 @@ function App() {
     }
   };
 
+  // -----------------------------
+  // Upload CSV
+  // -----------------------------
+
   const uploadCSV = async () => {
     if (!csvFile || !subject || !body || !scheduledTime) {
       setMessage(
         "Select a CSV and fill subject, message and start time."
       );
+      return;
+    }
+
+    if (!selectedSender) {
+      setMessage("Please select a sender.");
       return;
     }
 
@@ -229,13 +479,13 @@ function App() {
         throw new Error("Start time must be in the future.");
       }
 
-      /*
-       * Schedule each recipient separately so the selected
-       * delay is applied between individual emails.
-       */
       let successCount = 0;
 
-      for (let index = 0; index < recipients.length; index++) {
+      for (
+        let index = 0;
+        index < recipients.length;
+        index++
+      ) {
         const recipientEmail = recipients[index];
 
         const recipientTime = new Date(
@@ -254,6 +504,7 @@ function App() {
               subject,
               body,
               scheduledTime: recipientTime.toISOString(),
+              senderId: selectedSender,
             }),
           }
         );
@@ -283,17 +534,25 @@ function App() {
       await loadEmails();
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "CSV upload failed"
+        error instanceof Error
+          ? error.message
+          : "CSV upload failed"
       );
     } finally {
       setLoading(false);
     }
   };
 
+  // -----------------------------
+  // Filter emails
+  // -----------------------------
+
   const filteredEmails =
     activeTab === "all"
       ? emails
-      : emails.filter((email) => email.status === activeTab);
+      : emails.filter(
+          (email) => email.status === activeTab
+        );
 
   const scheduledCount = emails.filter(
     (email) => email.status === "SCHEDULED"
@@ -306,6 +565,10 @@ function App() {
   const failedCount = emails.filter(
     (email) => email.status === "FAILED"
   ).length;
+
+  // -----------------------------
+  // UI
+  // -----------------------------
 
   return (
     <div className="app">
@@ -366,12 +629,78 @@ function App() {
         </nav>
 
         <div className="sidebarBottom">
-          <div className="userAvatar">L</div>
+          {loadingUser ? (
+            <>
+              <div className="userAvatar">...</div>
 
-          <div>
-            <strong>User</strong>
-            <small>Email Scheduler</small>
-          </div>
+              <div>
+                <strong>Loading...</strong>
+                <small>Please wait</small>
+              </div>
+            </>
+          ) : user ? (
+            <>
+              <div className="userAvatar">
+                {user.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.name}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      borderRadius: "50%",
+                      objectFit: "cover",
+                    }}
+                  />
+                ) : (
+                  user.name.charAt(0).toUpperCase()
+                )}
+              </div>
+
+              <div>
+                <strong>{user.name}</strong>
+                <small>{user.email}</small>
+
+                <button
+                  type="button"
+                  onClick={logout}
+                  style={{
+                    marginTop: "4px",
+                    border: "none",
+                    background: "transparent",
+                    padding: 0,
+                    cursor: "pointer",
+                    fontSize: "12px",
+                  }}
+                >
+                  Logout
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="userAvatar">?</div>
+
+              <div>
+                <strong>Not logged in</strong>
+
+                <button
+                  type="button"
+                  onClick={loginWithGoogle}
+                  style={{
+                    marginTop: "4px",
+                    border: "none",
+                    background: "transparent",
+                    padding: 0,
+                    cursor: "pointer",
+                    fontSize: "12px",
+                  }}
+                >
+                  Sign in with Google
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </aside>
 
@@ -384,19 +713,71 @@ function App() {
             </p>
           </div>
 
-          <button
-            className="composeButton"
-            onClick={() =>
-              setShowCompose(!showCompose)
-            }
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+            }}
           >
-            + Compose Email
-          </button>
+            {user && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                {user.avatarUrl && (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.name}
+                    style={{
+                      width: "34px",
+                      height: "34px",
+                      borderRadius: "50%",
+                      objectFit: "cover",
+                    }}
+                  />
+                )}
+
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  <strong style={{ fontSize: "13px" }}>
+                    {user.name}
+                  </strong>
+
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      color: "#777",
+                    }}
+                  >
+                    {user.email}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <button
+              className="composeButton"
+              onClick={() =>
+                setShowCompose(!showCompose)
+              }
+            >
+              + Compose Email
+            </button>
+          </div>
         </header>
 
         <section className="stats">
           <div className="statCard">
             <div className="statIcon blue">◷</div>
+
             <div>
               <span>Scheduled</span>
               <strong>{scheduledCount}</strong>
@@ -405,6 +786,7 @@ function App() {
 
           <div className="statCard">
             <div className="statIcon green">✓</div>
+
             <div>
               <span>Sent</span>
               <strong>{sentCount}</strong>
@@ -413,6 +795,7 @@ function App() {
 
           <div className="statCard">
             <div className="statIcon red">!</div>
+
             <div>
               <span>Failed</span>
               <strong>{failedCount}</strong>
@@ -421,6 +804,7 @@ function App() {
 
           <div className="statCard">
             <div className="statIcon purple">✉</div>
+
             <div>
               <span>Total</span>
               <strong>{emails.length}</strong>
@@ -428,11 +812,142 @@ function App() {
           </div>
         </section>
 
+        {/* -----------------------------
+            Slack Integration
+        ----------------------------- */}
+
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            padding: "18px 20px",
+            marginBottom: "20px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "20px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "14px",
+            }}
+          >
+            <div
+              style={{
+                width: "42px",
+                height: "42px",
+                borderRadius: "10px",
+                background: "#f4f0ff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: "22px",
+              }}
+            >
+              #
+            </div>
+
+            <div>
+              <h3
+                style={{
+                  margin: 0,
+                  fontSize: "15px",
+                }}
+              >
+                Slack Notifications
+              </h3>
+
+              {loadingSlack ? (
+                <p
+                  style={{
+                    margin: "4px 0 0",
+                    fontSize: "12px",
+                    color: "#777",
+                  }}
+                >
+                  Checking connection...
+                </p>
+              ) : slackStatus.connected ? (
+                <p
+                  style={{
+                    margin: "4px 0 0",
+                    fontSize: "12px",
+                    color: "#16803c",
+                  }}
+                >
+                  ● Connected to{" "}
+                  <strong>
+                    {slackStatus.workspaceName ||
+                      "Slack workspace"}
+                  </strong>
+                </p>
+              ) : (
+                <p
+                  style={{
+                    margin: "4px 0 0",
+                    fontSize: "12px",
+                    color: "#777",
+                  }}
+                >
+                  Connect Slack to receive rate-limit alerts.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {slackStatus.connected ? (
+            <button
+              type="button"
+              onClick={disconnectSlack}
+              disabled={loadingSlack}
+              style={{
+                border: "1px solid #dc2626",
+                background: "#fff",
+                color: "#dc2626",
+                borderRadius: "8px",
+                padding: "9px 15px",
+                cursor: loadingSlack
+                  ? "not-allowed"
+                  : "pointer",
+                fontWeight: 600,
+              }}
+            >
+              {loadingSlack
+                ? "Disconnecting..."
+                : "Disconnect Slack"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={connectSlack}
+              disabled={loadingSlack}
+              style={{
+                border: "none",
+                background: "#4a154b",
+                color: "#fff",
+                borderRadius: "8px",
+                padding: "9px 15px",
+                cursor: loadingSlack
+                  ? "not-allowed"
+                  : "pointer",
+                fontWeight: 600,
+              }}
+            >
+              Connect Slack
+            </button>
+          )}
+        </section>
+
         {showCompose && (
           <section className="composeCard">
             <div className="cardHeader">
               <div>
                 <h2>Compose Email</h2>
+
                 <p>
                   Schedule a single email or upload
                   multiple recipients.
@@ -451,7 +966,44 @@ function App() {
 
             <div className="form">
               <label>
+                Sender
+
+                <select
+                  value={selectedSender}
+                  onChange={(e) =>
+                    setSelectedSender(e.target.value)
+                  }
+                  disabled={
+                    loadingSenders ||
+                    senders.length === 0
+                  }
+                >
+                  {loadingSenders ? (
+                    <option value="">
+                      Loading senders...
+                    </option>
+                  ) : senders.length === 0 ? (
+                    <option value="">
+                      No senders available
+                    </option>
+                  ) : (
+                    senders.map((sender) => (
+                      <option
+                        key={sender.id}
+                        value={sender.id}
+                      >
+                        {sender.name
+                          ? `${sender.name} — ${sender.email}`
+                          : sender.email}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+
+              <label>
                 Recipient
+
                 <input
                   type="email"
                   placeholder="recipient@example.com"
@@ -464,6 +1016,7 @@ function App() {
 
               <label>
                 Subject
+
                 <input
                   type="text"
                   placeholder="Email subject"
@@ -476,6 +1029,7 @@ function App() {
 
               <label>
                 Message
+
                 <textarea
                   placeholder="Write your email..."
                   value={body}
@@ -489,6 +1043,7 @@ function App() {
               <div className="formRow">
                 <label>
                   Start Time
+
                   <input
                     type="datetime-local"
                     value={scheduledTime}
@@ -500,24 +1055,46 @@ function App() {
 
                 <label>
                   Delay Between Emails
+
                   <select
                     value={delaySeconds}
                     onChange={(e) =>
                       setDelaySeconds(e.target.value)
                     }
                   >
-                    <option value="0">No delay</option>
-                    <option value="1">1 second</option>
-                    <option value="2">2 seconds</option>
-                    <option value="5">5 seconds</option>
-                    <option value="10">10 seconds</option>
-                    <option value="30">30 seconds</option>
-                    <option value="60">1 minute</option>
+                    <option value="0">
+                      No delay
+                    </option>
+
+                    <option value="1">
+                      1 second
+                    </option>
+
+                    <option value="2">
+                      2 seconds
+                    </option>
+
+                    <option value="5">
+                      5 seconds
+                    </option>
+
+                    <option value="10">
+                      10 seconds
+                    </option>
+
+                    <option value="30">
+                      30 seconds
+                    </option>
+
+                    <option value="60">
+                      1 minute
+                    </option>
                   </select>
                 </label>
 
                 <label>
                   Hourly Limit
+
                   <input
                     type="number"
                     min="1"
@@ -533,7 +1110,10 @@ function App() {
                 <button
                   className="primaryButton"
                   onClick={scheduleEmail}
-                  disabled={loading}
+                  disabled={
+                    loading ||
+                    senders.length === 0
+                  }
                 >
                   {loading
                     ? "Scheduling..."
@@ -547,6 +1127,7 @@ function App() {
 
               <label>
                 Upload Recipients CSV
+
                 <input
                   type="file"
                   accept=".csv"
@@ -557,9 +1138,13 @@ function App() {
               {csvFile && (
                 <div className="csvInfo">
                   <strong>{csvFile.name}</strong>
+
                   <span>
                     {csvCount} email address
-                    {csvCount === 1 ? "" : "es"} detected
+                    {csvCount === 1
+                      ? ""
+                      : "es"}{" "}
+                    detected
                   </span>
                 </div>
               )}
@@ -567,7 +1152,11 @@ function App() {
               <button
                 className="secondaryButton"
                 onClick={uploadCSV}
-                disabled={loading || !csvFile}
+                disabled={
+                  loading ||
+                  !csvFile ||
+                  senders.length === 0
+                }
               >
                 {loading
                   ? "Scheduling..."
@@ -590,7 +1179,9 @@ function App() {
                 {activeTab === "all"
                   ? "All Emails"
                   : activeTab.charAt(0) +
-                    activeTab.slice(1).toLowerCase()}
+                    activeTab
+                      .slice(1)
+                      .toLowerCase()}
               </h2>
 
               <p>
@@ -617,7 +1208,9 @@ function App() {
           ) : filteredEmails.length === 0 ? (
             <div className="empty">
               <div className="emptyIcon">✉</div>
+
               <h3>No emails found</h3>
+
               <p>
                 Schedule an email to see it here.
               </p>
@@ -629,6 +1222,7 @@ function App() {
                   <tr>
                     <th>Recipient</th>
                     <th>Subject</th>
+                    <th>Sender</th>
                     <th>Scheduled</th>
                     <th>Status</th>
                   </tr>
@@ -644,6 +1238,11 @@ function App() {
                       </td>
 
                       <td>{email.subject}</td>
+
+                      <td>
+                        {email.sender?.email ||
+                          "Default"}
+                      </td>
 
                       <td>
                         {new Date(

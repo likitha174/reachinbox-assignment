@@ -1,7 +1,7 @@
 import IORedis from "ioredis";
 import { config } from "./config.js";
 
-const connection = new IORedis({
+const connection = new IORedis.default({
   host: "localhost",
   port: 6379,
   maxRetriesPerRequest: null,
